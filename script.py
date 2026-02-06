@@ -24,37 +24,41 @@ def send_email(subject, body):
 
 def run_bot():
     with sync_playwright() as p:
-        # Browser launch karein
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
         page = context.new_page()
         
         try:
             print("Opening Superior LMS...")
-            page.goto("https://lms.superior.edu.pk/login/index.php", wait_until="networkidle")
+            # Timeout barha diya hai taaki agar site slow ho to masla na ho
+            page.goto("https://lms.superior.edu.pk/login/index.php", wait_until="load", timeout=60000)
+            
+            print("Waiting for login fields...")
+            # Intezar karein jab tak username box nazar na aa jaye
+            page.wait_for_selector('#username', timeout=30000)
             
             print("Entering credentials...")
-            # Superior LMS ke sahi selectors
-            page.fill('input#username', LMS_USER)
-            page.fill('input#password', LMS_PASS)
+            page.fill('#username', LMS_USER)
+            page.fill('#password', LMS_PASS)
             
-            print("Clicking login...")
-            page.click('button#loginbtn')
+            print("Clicking login button...")
+            # Selector ko simple kar diya hai (#loginbtn)
+            page.click('#loginbtn')
             
-            # Login hone ka intezar karein
+            # Dashboard aane ka intezar
+            print("Waiting for Dashboard to load...")
             page.wait_for_load_state("networkidle")
             
-            # Check karein login kamyab hua ya nahi
-            if "Dashboard" in page.title() or "My courses" in page.content():
+            if "Dashboard" in page.content() or "My courses" in page.content():
                 print("Successfully logged in!")
-                send_email("LMS Bot Alert", "Bot successfully logged into Superior LMS Dashboard.")
+                send_email("LMS Bot Alert", "Superior LMS Login Successful! Bot is working.")
             else:
-                print("Login might have failed. Dashboard not found.")
+                print("Login status unclear. Checking content...")
+                # Agar login fail hua to ye print hoga
+                print("Page Title:", page.title())
                 
         except Exception as e:
             print(f"An error occurred: {e}")
-            # Error ki surat mein bhi screenshot le sakte hain debugging ke liye
-            page.screenshot(path="error.png")
             
         browser.close()
 
