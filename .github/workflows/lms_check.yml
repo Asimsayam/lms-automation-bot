@@ -2,7 +2,7 @@ name: LMS Monitor Bot
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # Har 30 minute baad chalega
+    - cron: '0 5 * * *'  # Har 30 minute baad chalega
   workflow_dispatch:        # Manual button ke liye
 
 jobs:
