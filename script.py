@@ -1,6 +1,5 @@
 import os
 import smtplib
-import time
 from playwright.sync_api import sync_playwright
 from email.message import EmailMessage
 from datetime import datetime, timedelta
@@ -62,26 +61,20 @@ def send_professional_email(subject, title, subtitle, tasks, status_color):
 
 def scrape_day_tasks(page, url):
     tasks = []
-    page.goto(url, wait_until="networkidle")
-    # Calendar day view mein events ko dhoondna
-    event_elements = page.query_selector_all('.event')
-    for event in event_elements:
-        try:
+    try:
+        page.goto(url, wait_until="load", timeout=60000)
+        page.wait_for_timeout(5000)
+        # Calendar view mein event boxes dhoondna
+        event_elements = page.query_selector_all('.event')
+        for event in event_elements:
             name = event.query_selector('h3').inner_text().strip()
-            # Moodle day view details
-            details = event.inner_text()
-            course = "Course Detail in LMS"
-            # Course name aksar description ya links mein hota hai
+            course = "Not Specified"
             course_el = event.query_selector('.course') or event.query_selector('a[href*="course/view.php"]')
             if course_el: course = course_el.inner_text().strip()
-            
-            deadline = "11:59 PM" # Default
-            time_el = event.query_selector('.col-11') or event.query_selector('div:has-text("PM"), div:has-text("AM")')
-            if time_el: deadline = time_el.inner_text().strip()
-            
+            deadline = event.inner_text() # Pura text lelo deadline ke liye
             tasks.append({'name': name, 'course': course, 'date': deadline})
-        except:
-            continue
+    except:
+        pass
     return tasks
 
 def run_bot():
@@ -92,17 +85,19 @@ def run_bot():
         
         now_pak = datetime.utcnow() + timedelta(hours=5)
         current_hour = now_pak.hour
-        
-        # Calculate Unix Timestamp for 2 days later
         two_days_later_ts = int((datetime.utcnow() + timedelta(hours=5, days=2)).timestamp())
 
         try:
-            # Login
+            print("Logging into LMS...")
             page.goto("https://lms.superior.edu.pk/login/index.php")
-            page.fill('#username', LMS_USER)
-            page.fill('#password', LMS_PASS)
-            page.click('#loginbtn')
+            page.wait_for_selector('input[name="username"]')
+            page.fill('input[name="username"]', LMS_USER)
+            page.fill('input[name="password"]', LMS_PASS)
+            
+            # Login Button dhoondne ke bajaye seedha ENTER press karein (Foolproof)
+            page.keyboard.press("Enter")
             page.wait_for_load_state("networkidle")
+            print("Login successful!")
 
             # 1. Check Today's Tasks
             today_url = "https://lms.superior.edu.pk/calendar/view.php?view=day"
@@ -112,29 +107,24 @@ def run_bot():
             later_url = f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={two_days_later_ts}"
             upcoming_tasks = scrape_day_tasks(page, later_url)
 
-            # --- APPLYING YOUR RULES ---
-            
-            # RULE 1: Morning 10 AM (Hour 10)
+            # --- YOUR RULES ---
             if 9 <= current_hour <= 11:
                 if urgent_tasks:
-                    send_professional_email("LMS URGENT: Due Today!", "Daily Alert: Action Required", "You have tasks ending today!", urgent_tasks, "#d32f2f")
+                    send_professional_email("LMS URGENT Alert", "Due Today!", "Ending today!", urgent_tasks, "#d32f2f")
                 else:
-                    send_professional_email("LMS Status: All Clear ✅", "Good Morning!", "No tasks due for today.", [], "#2e7d32")
+                    send_professional_email("LMS Status: Clear ✅", "Good Morning!", "No tasks today.", [], "#2e7d32")
 
-            # RULE 2: Evening 5 PM (Hour 17)
             elif 16 <= current_hour <= 18:
                 if urgent_tasks:
-                    send_professional_email("LMS Evening Reminder", "Reminder: Pending Tasks", "Submit these before the day ends!", urgent_tasks, "#f57c00")
+                    send_professional_email("LMS Evening Reminder", "Still Pending!", "Submit tonight!", urgent_tasks, "#f57c00")
                 elif upcoming_tasks:
-                    send_professional_email("LMS Alert: 2 Days Left", "Upcoming Deadline", "You have a task due in 2 days.", upcoming_tasks, "#0277bd")
+                    send_professional_email("LMS Alert: 2 Days Left", "Upcoming Deadline", "Due in 2 days.", upcoming_tasks, "#0277bd")
 
-            # RULE 3: Night 11 PM (Hour 23)
-            elif current_hour >= 22:
-                if urgent_tasks:
-                    send_professional_email("LMS FINAL WARNING! 🚨", "Closing Soon!", "This is your last chance to upload.", urgent_tasks, "#212121")
+            elif current_hour >= 22 and urgent_tasks:
+                send_professional_email("LMS FINAL WARNING! 🚨", "Last Chance!", "Submit now!", urgent_tasks, "#212121")
 
         except Exception as e:
-            print(f"Bot execution failed: {e}")
+            print(f"Bot failed: {e}")
         
         browser.close()
 
