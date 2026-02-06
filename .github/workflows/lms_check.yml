@@ -2,12 +2,14 @@ name: LMS Monitor Bot
 
 on:
   schedule:
-    - cron: '0 5 * * *'  # Har 30 minute baad chalega
-  workflow_dispatch:        # Manual button ke liye
+    # Pakistan Time: Subah 10, Shaam 5 aur Raat 11 baje
+    - cron: '0 5,12,18 * * *'
+  workflow_dispatch: # Manual button ke liye
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
