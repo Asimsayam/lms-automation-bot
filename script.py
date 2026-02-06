@@ -29,62 +29,68 @@ def run_bot():
         context = browser.new_context()
         page = context.new_page()
         
-        # Pakistan Time (UTC + 5)
-        now_pakistan = datetime.utcnow() + timedelta(hours=5)
-        current_hour = now_pakistan.hour
-        today_str = now_pakistan.strftime("%d %B")
-        two_days_later = (now_pakistan + timedelta(days=2)).strftime("%d %B")
+        # Pakistan Time Calculation
+        now_pak = datetime.utcnow() + timedelta(hours=5)
+        current_hour = now_pak.hour
+        
+        # Multiple date formats to match LMS (e.g. "8 February" and "08 February")
+        today_dates = [now_pak.strftime("%d %B"), now_pak.strftime("%-d %B")]
+        two_days_dates = [(now_pak + timedelta(days=2)).strftime("%d %B"), 
+                          (now_pak + timedelta(days=2)).strftime("%-d %B")]
+
+        print(f"Current PK Time: {now_pak.strftime('%Y-%m-%d %H:%M')}")
+        print(f"Looking for dates: Today={today_dates}, In 2 Days={two_days_dates}")
 
         try:
-            print("Opening LMS...")
             page.goto("https://lms.superior.edu.pk/login/index.php", wait_until="networkidle")
             page.fill('input[name="username"]', LMS_USER)
             page.fill('input[name="password"]', LMS_PASS)
             page.keyboard.press("Enter")
-            page.wait_for_timeout(8000)
+            page.wait_for_timeout(10000) # Give it 10 seconds to fully load dashboard
 
-            print("Checking Timeline for Tasks & Subjects...")
-            tasks = page.query_selector_all('.timeline-event-list-item')
+            tasks_found = page.query_selector_all('.timeline-event-list-item')
             urgent_tasks = []
             upcoming_tasks = []
             
-            for item in tasks:
+            for item in tasks_found:
                 try:
-                    # Task ka naam (e.g. Assignment 1)
                     name = item.query_selector('.event-name').inner_text().strip()
+                    date_text = item.query_selector('.small.text-muted').inner_text().strip()
                     
-                    # Subject/Course ka naam dhoondna
-                    # Moodle mein ye aksar 'small' text ya link mein hota hai
-                    course_info = ""
+                    course_info = "N/A"
                     course_el = item.query_selector('.text-muted') or item.query_selector('a[href*="course/view.php"]')
                     if course_el:
-                        course_info = course_el.inner_text().split('|')[0].strip() # Clean course name
-                    
-                    # Deadline ki tareekh
-                    date_text = item.query_selector('.small.text-muted').inner_text().strip()
+                        course_info = course_el.inner_text().split('|')[0].strip()
                     
                     full_info = f"📌 {name}\n   📖 Subject: {course_info}\n   ⏰ Deadline: {date_text}"
                     
-                    if "Today" in date_text or today_str in date_text:
+                    # Logic to match dates
+                    if any(d in date_text for d in ["Today", "today"]) or any(d in date_text for d in today_dates):
                         urgent_tasks.append(full_info)
-                    elif two_days_later in date_text:
+                    elif any(d in date_text for d in two_days_dates):
                         upcoming_tasks.append(full_info)
                 except:
                     continue
 
-            # --- RULES ---
-            if not urgent_tasks and not upcoming_tasks:
-                if current_hour == 10:
-                    send_email("LMS Update: No tasks today ✅", "Asalam-o-Alaikum! Aaj ke liye koi pending task nahi mila. Relax!")
-            
-            if urgent_tasks:
-                time_msg = "URGENT - LAST CHANCE!" if current_hour >= 22 else "Daily Reminder"
-                body = f"Asalam-o-Alaikum,\n\nYe tasks AAJ submit karne hain:\n\n" + "\n\n".join(urgent_tasks)
-                send_email(f"LMS Alert: {time_msg}", body)
+            # --- SMART RULES ---
+            # 1. Subah 10 baje (9 to 11 AM) - Report hamesha bhejni hai
+            if 9 <= current_hour <= 11:
+                if not urgent_tasks and not upcoming_tasks:
+                    send_email("LMS Update: No tasks today ✅", "Asalam-o-Alaikum! Aaj ke liye koi pending task nahi mila.")
+                elif urgent_tasks:
+                    send_email("LMS URGENT: Tasks due TODAY! ⚠️", "Ye tasks AAJ submit karne hain:\n\n" + "\n\n".join(urgent_tasks))
 
-            elif upcoming_tasks and current_hour == 17:
-                body = f"Asalam-o-Alaikum,\n\nYe tasks 2 DIN BAAD due hain. Inhain waqt par mukammal karlein:\n\n" + "\n\n".join(upcoming_tasks)
-                send_email("LMS Alert: 2 Days Left! ⏳", body)
+            # 2. Shaam 5 baje (4 to 6 PM) - 2 din pehle ka alert
+            elif 16 <= current_hour <= 18:
+                if urgent_tasks:
+                    send_email("LMS Evening Reminder: Tasks due TODAY! ⚠️", "Friendly reminder, ye tasks AAJ khatam ho rahe hain:\n\n" + "\n\n".join(urgent_tasks))
+                elif upcoming_tasks:
+                    send_email("LMS Alert: 2 Days Left! ⏳", "Asalam-o-Alaikum! Ye tasks 2 din baad due hain:\n\n" + "\n\n".join(upcoming_tasks))
+
+            # 3. Raat 11 baje (9 to 12 PM) - Final Warning
+            elif current_hour >= 21:
+                if urgent_tasks:
+                    send_email("LMS FINAL WARNING: Submit Now! 🚨", "Ye tasks AAJ ki date mein hain, foran upload karein:\n\n" + "\n\n".join(urgent_tasks))
 
         except Exception as e:
             print(f"Error: {e}")
