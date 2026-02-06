@@ -24,53 +24,51 @@ def send_email(subject, body):
 
 def run_bot():
     with sync_playwright() as p:
-        # Browser launch karein (window size barha di hai debugging ke liye)
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(viewport={'width': 1280, 'height': 720})
+        context = browser.new_context()
         page = context.new_page()
         
         try:
             print("Opening Superior LMS...")
-            page.goto("https://lms.superior.edu.pk/login/index.php", wait_until="networkidle", timeout=60000)
+            page.goto("https://lms.superior.edu.pk/login/index.php", wait_until="networkidle")
             
-            print("Entering credentials...")
-            page.wait_for_selector('input[name="username"]', timeout=30000)
+            print("Logging in...")
             page.fill('input[name="username"]', LMS_USER)
             page.fill('input[name="password"]', LMS_PASS)
+            page.keyboard.press("Enter")
             
-            print("Attempting to click Login button...")
-            # Ye 3 alag tareeqon se button dhoondega
-            login_selectors = [
-                'button#loginbtn', 
-                'input#loginbtn', 
-                'button:has-text("Log in")', 
-                '.btn-primary'
+            # Dashboard load hone ka intezar
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(5000) # Thoda extra time loading ke liye
+
+            print("Checking for Tasks/Assignments...")
+            # Moodle LMS mein 'Timeline' section ko dhoondna
+            tasks_found = []
+            
+            # Timeline mein jo events hote hain unke selectors
+            event_selectors = [
+                '.event-name', 
+                '.list-group-item[data-region="event-list-item"]',
+                '.timeline-event-list-item'
             ]
             
-            clicked = False
-            for selector in login_selectors:
-                if page.is_visible(selector):
-                    page.click(selector)
-                    print(f"Clicked using: {selector}")
-                    clicked = True
-                    break
-            
-            if not clicked:
-                print("Could not find login button with standard selectors. Pressing Enter instead...")
-                page.keyboard.press("Enter")
+            for selector in event_selectors:
+                elements = page.query_selector_all(selector)
+                for el in elements:
+                    text = el.inner_text().strip()
+                    if text and text not in tasks_found:
+                        tasks_found.append(text)
 
-            # Dashboard ka intezar
-            print("Waiting for Dashboard...")
-            page.wait_for_timeout(5000) # 5 second ruko taaki page load ho jaye
-            
-            # Check success
-            if "Dashboard" in page.content() or "My courses" in page.content() or "Logout" in page.content():
-                print("SUCCESS: Logged in to Superior LMS!")
-                send_email("LMS Bot Alert", "Superior LMS Login Successful! Bot is now active.")
+            if tasks_found:
+                print(f"Found {len(tasks_found)} tasks!")
+                task_list = "\n".join([f"- {task}" for task in tasks_found])
+                email_body = f"Hello! Following tasks were found on your Superior LMS:\n\n{task_list}\n\nCheck here: https://lms.superior.edu.pk/my/"
+                send_email("LMS Task Alert! 📢", email_body)
             else:
-                print("Current Page Title:", page.title())
-                print("Login might have failed or took too long.")
-                
+                print("No pending tasks found.")
+                # Agar aap chahte hain ke task na hone par bhi mail aaye, to niche wali line un-comment kar dein
+                # send_email("LMS Check", "No pending tasks found today. Relax!")
+
         except Exception as e:
             print(f"An error occurred: {e}")
             
