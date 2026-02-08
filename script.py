@@ -11,6 +11,7 @@ EMAIL_USER = os.environ.get('EMAIL_USER')
 EMAIL_PASS = os.environ.get('EMAIL_PASS')
 
 def send_professional_email(subject, title, subtitle, tasks, status_color):
+    print(f"[DEBUG] Preparing to send email with subject: {subject}")
     msg = EmailMessage()
     msg['Subject'] = subject
     msg['From'] = f"Superior LMS Assistant <{EMAIL_USER}>"
@@ -50,21 +51,24 @@ def send_professional_email(subject, title, subtitle, tasks, status_color):
     """
     msg.add_alternative(html_content, subtype='html')
 
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-        smtp.login(EMAIL_USER, EMAIL_PASS)
-        smtp.send_message(msg)
-    print(f"Email sent: {subject}")
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(EMAIL_USER, EMAIL_PASS)
+            smtp.send_message(msg)
+        print(f"[DEBUG] Email sent successfully: {subject}")
+    except Exception as e:
+        print(f"[ERROR] Failed to send email: {e}")
 
 def scrape_day_tasks(page, url):
     tasks = []
     try:
-        print(f"Navigating to: {url}")
+        print(f"[DEBUG] Navigating to: {url}")
         page.goto(url, wait_until="load", timeout=90000)
         page.wait_for_timeout(7000)
         event_elements = page.query_selector_all('.event')
+        print(f"[DEBUG] Found {len(event_elements)} event elements.")
         for event in event_elements:
             full_text = event.inner_text()
-            # Only consider tasks with "Add submission" (pending tasks)
             if "Add submission" in full_text:
                 name_el = event.query_selector('h3')
                 name = name_el.inner_text().strip() if name_el else "Unnamed Task"
@@ -72,8 +76,9 @@ def scrape_day_tasks(page, url):
                 course = course_el.inner_text().strip() if course_el else "LMS Course"
                 date_text = full_text.replace("Add submission", "").strip()
                 tasks.append({'name': name, 'course': course, 'date': date_text})
+        print(f"[DEBUG] Tasks found: {len(tasks)}")
     except Exception as e:
-        print(f"Error scraping {url}: {e}")
+        print(f"[ERROR] Error scraping {url}: {e}")
     return tasks
 
 def run_bot():
@@ -86,6 +91,9 @@ def run_bot():
         now_pak = datetime.utcnow() + timedelta(hours=5)
         current_date = now_pak.date()
         current_hour = now_pak.hour
+        now_minute = now_pak.minute
+
+        print(f"[DEBUG] Current Pakistan time: {now_pak.strftime('%Y-%m-%d %H:%M')}, current_hour={current_hour}, current_minute={now_minute}")
 
         def date_to_ts(d):
             # Convert date (without time) to timestamp for midnight UTC+5
@@ -96,21 +104,26 @@ def run_bot():
         day_after_tomorrow_ts = date_to_ts(current_date + timedelta(days=2))
 
         try:
-            print(f"LMS Check started at {now_pak.strftime('%Y-%m-%d %H:%M')}...")
+            print(f"[DEBUG] Starting LMS Check...")
             page.goto("https://lms.superior.edu.pk/login/index.php", timeout=90000)
             page.fill('input[name="username"]', LMS_USER)
             page.fill('input[name="password"]', LMS_PASS)
             page.keyboard.press("Enter")
             page.wait_for_load_state("networkidle")
-            print("Login successful.")
+            print("[DEBUG] Login successful.")
 
             tasks_due_today = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={today_ts}")
             tasks_due_tomorrow = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={tomorrow_ts}")
             tasks_due_day_after = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={day_after_tomorrow_ts}")
 
-            # Alerts logic:
-            if current_hour == 17:
-                # 5 PM alerts
+            print(f"[DEBUG] Tasks Today: {len(tasks_due_today)}, Tomorrow: {len(tasks_due_tomorrow)}, Day After Tomorrow: {len(tasks_due_day_after)}")
+
+            # Define flexible alert windows:
+            morning_alert = (9 <= current_hour <= 11)
+            evening_alert = (16 <= current_hour <= 19)
+            last_alert = (current_hour == 10 and now_minute >= 30) or (current_hour == 11 and now_minute <= 55)
+
+            if evening_alert:
                 if tasks_due_day_after:
                     send_professional_email(
                         "LMS Alert: Tasks Due in 2 Days",
@@ -139,8 +152,7 @@ def run_bot():
                     )
                     return
 
-            elif current_hour == 10:
-                # 10 AM alerts
+            elif morning_alert:
                 if tasks_due_today:
                     send_professional_email(
                         "LMS FINAL WARNING!",
@@ -160,8 +172,7 @@ def run_bot():
                     )
                     return
 
-            elif current_hour == 23:
-                # 11 PM last alert for today’s tasks
+            elif last_alert:
                 if tasks_due_today:
                     send_professional_email(
                         "LMS LAST ALERT!",
@@ -173,7 +184,7 @@ def run_bot():
                     return
 
         except Exception as e:
-            print(f"Main execution error: {e}")
+            print(f"[ERROR] Main execution error: {e}")
         
         browser.close()
 
