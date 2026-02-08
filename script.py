@@ -4,7 +4,7 @@ from playwright.sync_api import sync_playwright
 from email.message import EmailMessage
 from datetime import datetime, timedelta
 
-# Credentials from Secrets
+# Credentials from environment variables
 LMS_USER = os.environ.get('LMS_USER')
 LMS_PASS = os.environ.get('LMS_PASS')
 EMAIL_USER = os.environ.get('EMAIL_USER')
@@ -15,12 +15,45 @@ def send_professional_email(subject, title, subtitle, tasks, status_color):
     msg['Subject'] = subject
     msg['From'] = f"Superior LMS Assistant <{EMAIL_USER}>"
     msg['To'] = EMAIL_USER
-    task_html = "".join([f"<div style='border-left: 5px solid {status_color}; padding: 15px; margin-bottom: 15px; background: #fafafa; border: 1px solid #eee; border-radius: 8px;'><strong style='font-size: 18px; color: #333;'>📌 {t['name']}</strong><br><div style='margin-top: 8px; color: #555; font-size: 14px;'>📖 <b>Course:</b> {t['course']}</div><div style='margin-top: 5px; color: {status_color}; font-weight: bold; font-size: 14px;'>⏰ <b>Deadline:</b><br>{t['date']}</div></div>" for t in tasks]) if tasks else "<p>✅ All Clear!</p>"
-    html_content = f"<html><body style='font-family: Arial, sans-serif; background-color: #f4f7f6; padding: 20px;'><div style='max-width: 600px; margin: auto; background: white; border-radius: 12px; border: 1px solid #ddd; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.1);'><div style='background: {status_color}; color: white; padding: 25px; text-align: center;'><h2 style='margin: 0;'>{title}</h2><p style='margin: 5px 0 0; opacity: 0.9;'>{subtitle}</p></div><div style='padding: 25px;'><p>Asalam-o-Alaikum Asim,</p><p style='font-size: 15px;'>Here is your LMS report:</p>{task_html}</div><div style='background: #f9f9f9; padding: 15px; text-align: center; font-size: 12px; color: #888;'>Superior Automated Assistant</div></div></body></html>"
+
+    if tasks:
+        task_html = "".join([
+            f"<div style='border-left: 5px solid {status_color}; padding: 15px; margin-bottom: 15px; "
+            f"background: #fafafa; border: 1px solid #eee; border-radius: 8px;'>"
+            f"<strong style='font-size: 18px; color: #333;'>📌 {t['name']}</strong><br>"
+            f"<div style='margin-top: 8px; color: #555; font-size: 14px;'>📖 <b>Course:</b> {t['course']}</div>"
+            f"<div style='margin-top: 5px; color: {status_color}; font-weight: bold; font-size: 14px;'>"
+            f"⏰ <b>Deadline:</b><br>{t['date']}</div></div>" for t in tasks])
+    else:
+        task_html = "<p>✅ All Clear! No pending tasks.</p>"
+
+    html_content = f"""
+    <html>
+    <body style='font-family: Arial, sans-serif; background-color: #f4f7f6; padding: 20px;'>
+    <div style='max-width: 600px; margin: auto; background: white; border-radius: 12px; border: 1px solid #ddd; 
+        overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.1);'>
+        <div style='background: {status_color}; color: white; padding: 25px; text-align: center;'>
+            <h2 style='margin: 0;'>{title}</h2>
+            <p style='margin: 5px 0 0; opacity: 0.9;'>{subtitle}</p>
+        </div>
+        <div style='padding: 25px;'>
+            <p>Asalam-o-Alaikum Asim,</p>
+            <p style='font-size: 15px;'>Here is your LMS report:</p>
+            {task_html}
+        </div>
+        <div style='background: #f9f9f9; padding: 15px; text-align: center; font-size: 12px; color: #888;'>
+            Superior Automated Assistant
+        </div>
+    </div>
+    </body>
+    </html>
+    """
     msg.add_alternative(html_content, subtype='html')
+
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
         smtp.login(EMAIL_USER, EMAIL_PASS)
         smtp.send_message(msg)
+    print(f"Email sent: {subject}")
 
 def scrape_day_tasks(page, url):
     tasks = []
@@ -31,12 +64,14 @@ def scrape_day_tasks(page, url):
         event_elements = page.query_selector_all('.event')
         for event in event_elements:
             full_text = event.inner_text()
-            if "Add submission" not in full_text: continue
-            name = event.query_selector('h3').inner_text().strip()
-            course = "LMS Course"
-            course_el = event.query_selector('.course') or event.query_selector('a[href*="course/view.php"]')
-            if course_el: course = course_el.inner_text().strip()
-            tasks.append({'name': name, 'course': course, 'date': full_info.replace("Add submission", "").strip() if 'full_info' in locals() else full_text})
+            # Only consider tasks with "Add submission" (pending tasks)
+            if "Add submission" in full_text:
+                name_el = event.query_selector('h3')
+                name = name_el.inner_text().strip() if name_el else "Unnamed Task"
+                course_el = event.query_selector('.course') or event.query_selector('a[href*="course/view.php"]')
+                course = course_el.inner_text().strip() if course_el else "LMS Course"
+                date_text = full_text.replace("Add submission", "").strip()
+                tasks.append({'name': name, 'course': course, 'date': date_text})
     except Exception as e:
         print(f"Error scraping {url}: {e}")
     return tasks
@@ -44,19 +79,24 @@ def scrape_day_tasks(page, url):
 def run_bot():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        # Global timeout set to 60 seconds
         context = browser.new_context()
         context.set_default_timeout(60000)
         page = context.new_page()
         
         now_pak = datetime.utcnow() + timedelta(hours=5)
+        current_date = now_pak.date()
         current_hour = now_pak.hour
-        today_ts = int(now_pak.timestamp())
-        tomorrow_ts = int((now_pak + timedelta(days=1)).timestamp())
-        two_days_ts = int((now_pak + timedelta(days=2)).timestamp())
+
+        def date_to_ts(d):
+            # Convert date (without time) to timestamp for midnight UTC+5
+            return int(datetime(d.year, d.month, d.day, 0, 0).timestamp())
+
+        today_ts = date_to_ts(current_date)
+        tomorrow_ts = date_to_ts(current_date + timedelta(days=1))
+        day_after_tomorrow_ts = date_to_ts(current_date + timedelta(days=2))
 
         try:
-            print(f"LMS Check started at {now_pak.strftime('%H:%M')}...")
+            print(f"LMS Check started at {now_pak.strftime('%Y-%m-%d %H:%M')}...")
             page.goto("https://lms.superior.edu.pk/login/index.php", timeout=90000)
             page.fill('input[name="username"]', LMS_USER)
             page.fill('input[name="password"]', LMS_PASS)
@@ -64,23 +104,73 @@ def run_bot():
             page.wait_for_load_state("networkidle")
             print("Login successful.")
 
-            tasks_today = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={today_ts}")
-            tasks_tomorrow = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={tomorrow_ts}")
-            tasks_upcoming = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={two_days_ts}")
+            tasks_due_today = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={today_ts}")
+            tasks_due_tomorrow = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={tomorrow_ts}")
+            tasks_due_day_after = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={day_after_tomorrow_ts}")
 
-            # --- RULES ---
-            if 8 <= current_hour <= 12: # Morning (8 AM to 12 PM)
-                if tasks_today: send_professional_email("LMS Alert: Due Today!", "Tasks Due Today", "Ending tonight!", tasks_today, "#d32f2f")
-                else: send_professional_email("LMS Status: All Clear ✅", "Good Morning!", "No tasks for today.", [], "#2e7d32")
+            # Alerts logic:
+            if current_hour == 17:
+                # 5 PM alerts
+                if tasks_due_day_after:
+                    send_professional_email(
+                        "LMS Alert: Tasks Due in 2 Days",
+                        "Upcoming Deadlines",
+                        "You have tasks due in 2 days.",
+                        tasks_due_day_after,
+                        "#0277bd"
+                    )
+                    return
+                if tasks_due_tomorrow:
+                    send_professional_email(
+                        "LMS Alert: Tasks Due Tomorrow",
+                        "Deadline Tomorrow",
+                        "You have tasks due tomorrow.",
+                        tasks_due_tomorrow,
+                        "#673ab7"
+                    )
+                    return
+                if tasks_due_today:
+                    send_professional_email(
+                        "LMS Evening Reminder",
+                        "Tasks Due Today",
+                        "Submit your tasks ASAP!",
+                        tasks_due_today,
+                        "#f57c00"
+                    )
+                    return
 
-            elif 16 <= current_hour <= 20: # Evening (4 PM to 8 PM)
-                if tasks_today: send_professional_email("LMS Evening Reminder", "Still Pending!", "Submit tonight!", tasks_today, "#f57c00")
-                elif tasks_tomorrow: send_professional_email("LMS Alert: Due Tomorrow!", "Deadline Tomorrow", "1 day left.", tasks_tomorrow, "#673ab7")
-                elif tasks_upcoming: send_professional_email("LMS Alert: 2 Days Left", "Upcoming Deadline", "Due in 2 days.", tasks_upcoming, "#0277bd")
-                else: send_professional_email("LMS Evening Status ✅", "All Clear", "No urgent tasks.", [], "#2e7d32")
+            elif current_hour == 10:
+                # 10 AM alerts
+                if tasks_due_today:
+                    send_professional_email(
+                        "LMS FINAL WARNING!",
+                        "Deadline Today",
+                        "Today is the last day to submit your tasks.",
+                        tasks_due_today,
+                        "#d32f2f"
+                    )
+                    return
+                if not (tasks_due_today or tasks_due_tomorrow or tasks_due_day_after):
+                    send_professional_email(
+                        "LMS Status: All Clear ✅",
+                        "Good Morning!",
+                        "No pending tasks at the moment.",
+                        [],
+                        "#2e7d32"
+                    )
+                    return
 
-            elif current_hour >= 21 and tasks_today: # Night
-                send_professional_email("LMS FINAL WARNING! 🚨", "Closing Soon!", "Last chance!", tasks_today, "#000000")
+            elif current_hour == 23:
+                # 11 PM last alert for today’s tasks
+                if tasks_due_today:
+                    send_professional_email(
+                        "LMS LAST ALERT!",
+                        "Deadline Passing!",
+                        "Submit your tasks immediately!",
+                        tasks_due_today,
+                        "#000000"
+                    )
+                    return
 
         except Exception as e:
             print(f"Main execution error: {e}")
