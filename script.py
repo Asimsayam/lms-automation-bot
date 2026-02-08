@@ -146,7 +146,7 @@ def run_bot():
                     print("No upcoming tasks, skipping 5 PM email.")
                 return
 
-            if 23 == current_hour:
+            if 23 <= current_hour <24:
                 # 11 PM time window email (exactly 11)
                 if combined_tasks_11pm:
                     send_professional_email(
