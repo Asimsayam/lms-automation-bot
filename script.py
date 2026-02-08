@@ -144,7 +144,7 @@ def run_bot():
 
             # Check submissions per day and only alert if still pending
             # 5 PM Alert - show tasks due in 2 days or 1 day or today in that order
-            if 16 <= current_hour <= 18:  # 4 PM to 6 PM to allow some flexibility
+            if 16 <= current_hour <= 20:  # 4 PM to 8 PM to allow some flexibility
                 tasks_due_in_2_days = filter_tasks_by_due(all_pending_tasks, 2)
                 if tasks_due_in_2_days:
                     send_professional_email(
@@ -179,7 +179,7 @@ def run_bot():
                     return
 
             # 10 AM Alert
-            elif 9 <= current_hour <= 11:  # 9 AM to 11 AM window
+            elif 9 <= current_hour <= 12:  # 9 AM to 11 AM window
                 tasks_due_today_only = filter_tasks_by_due(all_pending_tasks, 0)
                 if tasks_due_today_only:
                     send_professional_email(
