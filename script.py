@@ -3,7 +3,7 @@ import smtplib
 from playwright.sync_api import sync_playwright
 from email.message import EmailMessage
 from datetime import datetime, timedelta
-from dateutil import parser
+from dateutil.parser import parse
 
 # Credentials from environment variables
 LMS_USER = os.environ.get('LMS_USER')
@@ -65,40 +65,14 @@ def scrape_day_tasks(page, url):
         event_elements = page.query_selector_all('.event')
         for event in event_elements:
             full_text = event.inner_text()
-
+            # Only consider tasks with "Add submission" (pending tasks)
             if "Add submission" in full_text:
                 name_el = event.query_selector('h3')
                 name = name_el.inner_text().strip() if name_el else "Unnamed Task"
-
                 course_el = event.query_selector('.course') or event.query_selector('a[href*="course/view.php"]')
                 course = course_el.inner_text().strip() if course_el else "LMS Course"
-
-                # Extract date line from text
-                lines = full_text.split('\n')
-                date_line = None
-                for line in lines:
-                    line_lower = line.lower()
-                    if ('today' in line_lower or
-                        'tomorrow' in line_lower or
-                        any(month.lower() in line_lower for month in [
-                            'january','february','march','april','may','june',
-                            'july','august','september','october','november','december'])):
-                        date_line = line.strip()
-                        break
-
-                if date_line is None:
-                    print(f"Skipping task due to missing date info: {name}")
-                    continue
-
-                try:
-                    due_date = parser.parse(date_line, fuzzy=True)
-                    date_text = due_date.strftime('%A, %d %B %Y, %I:%M %p')
-                except Exception as e:
-                    print(f"Error parsing date '{date_line}' for task '{name}': {e}")
-                    continue
-
+                date_text = full_text.replace("Add submission", "").strip()
                 tasks.append({'name': name, 'course': course, 'date': date_text})
-
     except Exception as e:
         print(f"Error scraping {url}: {e}")
     return tasks
@@ -115,7 +89,6 @@ def run_bot():
         current_hour = now_pak.hour
 
         def date_to_ts(d):
-            # Convert date (without time) to timestamp for midnight UTC+5
             return int(datetime(d.year, d.month, d.day, 0, 0).timestamp())
 
         today_ts = date_to_ts(current_date)
@@ -135,50 +108,55 @@ def run_bot():
             tasks_due_tomorrow = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={tomorrow_ts}")
             tasks_due_day_after = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={day_after_tomorrow_ts}")
 
-            # Alerts logic with flexible time windows
-            if 16 <= current_hour < 19:  # 4 PM to 6:59 PM (5 PM alert window)
-                combined_tasks = []
-                # Combine all tasks due in 1 or 2 days + today pending tasks
-                if tasks_due_day_after:
-                    combined_tasks.extend(tasks_due_day_after)
-                if tasks_due_tomorrow:
-                    combined_tasks.extend(tasks_due_tomorrow)
-                if tasks_due_today:
-                    combined_tasks.extend(tasks_due_today)
-                if combined_tasks:
-                    send_professional_email(
-                        "LMS Alert: Tasks Due Soon",
-                        "Upcoming Deadlines",
-                        "You have tasks due soon. Please submit on time.",
-                        combined_tasks,
-                        "#0277bd"
-                    )
-                else:
-                    print("No upcoming tasks, skipping 5 PM email.")
+            combined_tasks_5pm = tasks_due_day_after + tasks_due_tomorrow + tasks_due_today
+            combined_tasks_10am = tasks_due_today
+            combined_tasks_11pm = tasks_due_today
 
-            elif 9 <= current_hour < 12:  # 9 AM to 11:59 AM (10 AM alert window)
-                if tasks_due_today:
+            if 9 <= current_hour <= 12:
+                # 10 AM time window email (flexible 9-12)
+                if combined_tasks_10am:
                     send_professional_email(
                         "LMS FINAL WARNING!",
                         "Deadline Today",
                         "Today is the last day to submit your tasks.",
-                        tasks_due_today,
+                        combined_tasks_10am,
                         "#d32f2f"
                     )
                 else:
-                    print("No tasks due today, skipping 10 AM email.")
+                    send_professional_email(
+                        "LMS Status: All Clear ✅",
+                        "Good Morning!",
+                        "No pending tasks at the moment.",
+                        [],
+                        "#2e7d32"
+                    )
+                return
 
-            elif current_hour == 23:  # 11 PM alert
-                if tasks_due_today:
+            if 16 <= current_hour <= 20:
+                # 5 PM time window email (flexible 4-8)
+                if combined_tasks_5pm:
+                    send_professional_email(
+                        "LMS Alert: Upcoming Deadlines",
+                        "Upcoming Deadlines",
+                        "You have tasks due soon. Please submit on time.",
+                        combined_tasks_5pm,
+                        "#0277bd"
+                    )
+                else:
+                    print("No upcoming tasks, skipping 5 PM email.")
+                return
+
+            if 23 == current_hour:
+                # 11 PM time window email (exactly 11)
+                if combined_tasks_11pm:
                     send_professional_email(
                         "LMS LAST ALERT!",
                         "Deadline Passing!",
                         "Submit your tasks immediately!",
-                        tasks_due_today,
+                        combined_tasks_11pm,
                         "#000000"
                     )
-                else:
-                    print("No tasks due today, skipping 11 PM email.")
+                return
 
         except Exception as e:
             print(f"Main execution error: {e}")
@@ -187,4 +165,5 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
