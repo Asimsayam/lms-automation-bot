@@ -3,7 +3,7 @@ import smtplib
 from playwright.sync_api import sync_playwright
 from email.message import EmailMessage
 from datetime import datetime, timedelta
-import dateutil.parser
+from dateutil import parser
 
 # Credentials from environment variables
 LMS_USER = os.environ.get('LMS_USER')
@@ -56,19 +56,14 @@ def send_professional_email(subject, title, subtitle, tasks, status_color):
         smtp.send_message(msg)
     print(f"Email sent: {subject}")
 
-def extract_due_date(text):
-    lines = text.split('\n')
-    for line in lines:
-        line = line.strip()
-        try:
-            # Parse line if it contains a recognizable date/time
-            parsed_date = dateutil.parser.parse(line, fuzzy=True, default=datetime.now())
-            # Check if parsed_date is reasonable (not too old)
-            if parsed_date > datetime.now() - timedelta(days=1):
-                return parsed_date
-        except Exception:
-            continue
-    return None
+def parse_task_date(date_str):
+    try:
+        # Parse date using dateutil parser
+        parsed_date = parser.parse(date_str, fuzzy=True)
+        return parsed_date.date()
+    except Exception as e:
+        print(f"Error parsing date '{date_str}': {e}")
+        return None
 
 def scrape_day_tasks(page, url):
     tasks = []
@@ -79,23 +74,29 @@ def scrape_day_tasks(page, url):
         event_elements = page.query_selector_all('.event')
         for event in event_elements:
             full_text = event.inner_text()
-            # Only consider tasks with "Add submission" (pending tasks)
             if "Add submission" in full_text:
                 name_el = event.query_selector('h3')
                 name = name_el.inner_text().strip() if name_el else "Unnamed Task"
+
                 course_el = event.query_selector('.course') or event.query_selector('a[href*="course/view.php"]')
                 course = course_el.inner_text().strip() if course_el else "LMS Course"
 
-                due_date = extract_due_date(full_text)
-                if not due_date:
-                    print(f"Skipping task due to date parsing issue: {name}")
+                # Extract date part carefully from full_text (remove "Add submission")
+                date_text = full_text.replace("Add submission", "").strip()
+                task_date = parse_task_date(date_text)
+                if not task_date:
+                    print(f"Skipping task due to date parsing issue: {full_text}")
                     continue
 
-                date_text = due_date.strftime("%A, %d %B %Y, %I:%M %p")
-                tasks.append({'name': name, 'course': course, 'date': date_text})
+                tasks.append({'name': name, 'course': course, 'date': task_date.strftime("%A, %d %B %Y")})
     except Exception as e:
         print(f"Error scraping {url}: {e}")
     return tasks
+
+def date_to_ts(d):
+    # Convert date (without time) to timestamp for midnight UTC+5
+    dt = datetime(d.year, d.month, d.day, 0, 0) - timedelta(hours=5)  # Convert to UTC for LMS URL
+    return int(dt.timestamp())
 
 def run_bot():
     with sync_playwright() as p:
@@ -103,13 +104,12 @@ def run_bot():
         context = browser.new_context()
         context.set_default_timeout(60000)
         page = context.new_page()
-
-        now_pak = datetime.utcnow() + timedelta(hours=5)
+        
+        now_utc = datetime.utcnow()
+        now_pak = now_utc + timedelta(hours=5)
         current_date = now_pak.date()
         current_hour = now_pak.hour
-
-        def date_to_ts(d):
-            return int(datetime(d.year, d.month, d.day, 0, 0).timestamp())
+        current_minute = now_pak.minute
 
         today_ts = date_to_ts(current_date)
         tomorrow_ts = date_to_ts(current_date + timedelta(days=1))
@@ -128,94 +128,65 @@ def run_bot():
             tasks_due_tomorrow = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={tomorrow_ts}")
             tasks_due_day_after = scrape_day_tasks(page, f"https://lms.superior.edu.pk/calendar/view.php?view=day&time={day_after_tomorrow_ts}")
 
-            # Flatten all tasks for combined checking
-            all_pending_tasks = tasks_due_today + tasks_due_tomorrow + tasks_due_day_after
+            # 5 PM alerts (16 to 19:59)
+            if 16 <= current_hour < 20:
+                combined_tasks = []
 
-            # Filter by due dates for alert logic
-            def filter_tasks_by_due(tasks, days_ahead):
-                now = now_pak.replace(hour=0, minute=0, second=0, microsecond=0)
-                filtered = []
-                for t in tasks:
-                    due_dt = datetime.strptime(t['date'], "%A, %d %B %Y, %I:%M %p")
-                    delta_days = (due_dt.date() - now.date()).days
-                    if delta_days == days_ahead:
-                        filtered.append(t)
-                return filtered
+                if tasks_due_day_after:
+                    for t in tasks_due_day_after:
+                        t['status'] = "Due in 2 Days"
+                    combined_tasks.extend(tasks_due_day_after)
 
-            # Check submissions per day and only alert if still pending
-            # 5 PM Alert - show tasks due in 2 days or 1 day or today in that order
-            if 16 <= current_hour <= 20:  # 4 PM to 8 PM to allow some flexibility
-                tasks_due_in_2_days = filter_tasks_by_due(all_pending_tasks, 2)
-                if tasks_due_in_2_days:
+                if tasks_due_tomorrow:
+                    for t in tasks_due_tomorrow:
+                        t['status'] = "Due Tomorrow"
+                    combined_tasks.extend(tasks_due_tomorrow)
+
+                if tasks_due_today:
+                    for t in tasks_due_today:
+                        t['status'] = "Due Today"
+                    combined_tasks.extend(tasks_due_today)
+
+                if combined_tasks:
                     send_professional_email(
-                        "LMS Alert: Tasks Due in 2 Days",
+                        "LMS Alert: Upcoming Deadlines",
                         "Upcoming Deadlines",
-                        "You have tasks due in 2 days.",
-                        tasks_due_in_2_days,
+                        "You have pending tasks due soon. Please submit on time.",
+                        combined_tasks,
                         "#0277bd"
                     )
-                    return
+                else:
+                    print("No upcoming tasks, skipping 5 PM email.")
 
-                tasks_due_tomorrow_only = filter_tasks_by_due(all_pending_tasks, 1)
-                if tasks_due_tomorrow_only:
-                    send_professional_email(
-                        "LMS Alert: Tasks Due Tomorrow",
-                        "Deadline Tomorrow",
-                        "You have tasks due tomorrow.",
-                        tasks_due_tomorrow_only,
-                        "#673ab7"
-                    )
-                    return
-
-                tasks_due_today_only = filter_tasks_by_due(all_pending_tasks, 0)
-                if tasks_due_today_only:
-                    send_professional_email(
-                        "LMS Evening Reminder",
-                        "Tasks Due Today",
-                        "Submit your tasks ASAP!",
-                        tasks_due_today_only,
-                        "#f57c00"
-                    )
-                    return
-
-            # 10 AM Alert
-            elif 9 <= current_hour <= 12:  # 9 AM to 11 AM window
-                tasks_due_today_only = filter_tasks_by_due(all_pending_tasks, 0)
-                if tasks_due_today_only:
+            # 10 AM alert (9 to 11:59, to allow late runs)
+            elif 9 <= current_hour < 12:
+                if tasks_due_today:
                     send_professional_email(
                         "LMS FINAL WARNING!",
                         "Deadline Today",
                         "Today is the last day to submit your tasks.",
-                        tasks_due_today_only,
+                        tasks_due_today,
                         "#d32f2f"
                     )
-                    return
-                if not all_pending_tasks:
-                    send_professional_email(
-                        "LMS Status: All Clear ✅",
-                        "Good Morning!",
-                        "No pending tasks at the moment.",
-                        [],
-                        "#2e7d32"
-                    )
-                    return
+                else:
+                    print("No tasks due today, skipping 10 AM email.")
 
-            # 11 PM Alert
-            elif 22 <= current_hour <= 23:  # 10 PM to 11 PM window
-                tasks_due_today_only = filter_tasks_by_due(all_pending_tasks, 0)
-                if tasks_due_today_only:
+            # 11 PM alert (23:00 to 23:59)
+            elif current_hour == 23:
+                if tasks_due_today:
                     send_professional_email(
                         "LMS LAST ALERT!",
                         "Deadline Passing!",
                         "Submit your tasks immediately!",
-                        tasks_due_today_only,
+                        tasks_due_today,
                         "#000000"
                     )
-                    return
+                else:
+                    print("No tasks due today, skipping 11 PM email.")
 
         except Exception as e:
             print(f"Main execution error: {e}")
-
+        
         browser.close()
 
 if __name__ == "__main__":
