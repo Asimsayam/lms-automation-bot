@@ -114,4 +114,4 @@ The bot is configured to run at:
 
 ## 👨‍💻 Author
 
-Developed with ❤️ by **Asim Sayyam**
+Developed with by **Asim Sayyam**
